@@ -237,7 +237,7 @@ The output of the detector is saved in `requestID_detections_requestName_timesta
     },
     "images": [
         {
-            "file": "/path/from/base/dir/image1.jpg",
+            "file": "path/from/base/dir/image1.jpg",
             "meta": "a string of metadata if it was available in the list at images_requested_json_sas",
             "max_detection_conf": 0.926,
             "detections": [
@@ -268,6 +268,9 @@ The output of the detector is saved in `requestID_detections_requestName_timesta
 }
 ```
 
+A full output example computed on the Snapshot Serengeti data can be found [here](http://dolphinvm.westus2.cloudapp.azure.com/data/snapshot_serengeti/serengeti_val_detections_from_pkl_MDv1_20190528_w_classifications.json).
+
+
 ##### Detector outputs
 
 The bounding box in the `bbox` field is represented as
@@ -294,7 +297,7 @@ After a classifier is applied, each tuple in a `classifications` list represents
 
 ## Post-processing tools
 
-The [postprocessing](postprocessing) folder contains tools for working with the output of our detector API.  In particular, [postprocess_batch_results.py](postprocessing/postprocess_batch_results.py) provides visualization and accuracy assessment tools for the output of the batch processing API.
+The [postprocessing](postprocessing) folder contains tools for working with the output of our detector API.  In particular, [postprocess_batch_results.py](postprocessing/postprocess_batch_results.py) provides visualization and accuracy assessment tools for the output of the batch processing API. A sample output for the Snapshot Serengeti data when using ground-truth annotations can be seen [here](http://dolphinvm.westus2.cloudapp.azure.com/data/snapshot_serengeti/serengeti_val_detections_from_pkl_MDv1_20190528_w_classifications_eval/).
 
 
 ## Integration with other tools

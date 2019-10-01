@@ -20,6 +20,7 @@ import argparse
 import os
 import sys
 import warnings
+import json
 from datetime import datetime
 from itertools import compress
 
@@ -30,10 +31,11 @@ from tqdm import tqdm
 
 # from ai4eutils; this is assumed to be on the path, as per repo convention
 import write_html_image_list
+import path_utils
 
 from api.batch_processing.postprocessing.load_api_results import load_api_results, write_api_results
 import ct_utils
-from visualization.visualization_utils import open_image, draw_bounding_box_on_image
+from visualization.visualization_utils import open_image, render_detection_bounding_boxes
 
 # Imports I'm not using but use when I tinker with parallelization
 #
@@ -53,7 +55,7 @@ warnings.filterwarnings('ignore', 'Metadata warning', UserWarning)
 class RepeatDetectionOptions:
     # inputFlename = r'D:\temp\tigers_20190308_all_output.csv'
 
-    # Only relevant for HTML rendering
+    # Relevant for rendering HTML or filtering folder of images
     imageBase = ''
     outputBase = ''
 
@@ -84,17 +86,20 @@ class RepeatDetectionOptions:
 
     # Load detections from a filter file rather than finding them from the detector output
 
-    # .json file containing detections, should be called detectionIndex.json in the filtering_* folder produced in the first pass
+    # .json file containing detections, should be called detectionIndex.json in the filtering_* folder 
+    # produced in the first pass
     filterFileToLoad = ''
 
-    # (optional) list of filenames remaining after deletion of identified repeated detections that are actually animals
+    # (optional) List of filenames remaining after deletion of identified 
+    # repeated detections that are actually animals.  This should be a flat
+    # text file, one relative filename per line.  See enumerate_images().
     filteredFileListToLoad = None
 
     # Turn on/off optional outputs
     bRenderHtml = False
     bWriteFilteringFolder = True
 
-    debugMaxDir = -1  # TODO list[0: -1] would exclude the last item actually...
+    debugMaxDir = -1
     debugMaxRenderDir = -1
     debugMaxRenderDetection = -1
     debugMaxRenderInstance = -1
@@ -120,7 +125,8 @@ class RepeatDetectionResults:
     The results of an entire repeat detection analysis
     """
 
-    # The data table (Pandas DataFrame), as loaded from the input json file via load_api_results()
+    # The data table (Pandas DataFrame), as loaded from the input json file via 
+    # load_api_results()
     detectionResults = None
 
     # The other fields in the input json file, loaded via load_api_results()
@@ -146,8 +152,9 @@ class RepeatDetectionResults:
 
 class IndexedDetection:
 
-    def __init__(self, iDetection=-1, filename='', bbox=[]):
-        """A single detection event on a single image
+    def __init__(self, iDetection=-1, filename='', bbox=[], confidence=-1, category='unknown'):
+        """
+        A single detection event on a single image
 
         Args:
             iDetection: order in API output file
@@ -157,6 +164,8 @@ class IndexedDetection:
         self.iDetection = iDetection
         self.filename = filename
         self.bbox = bbox
+        self.confidence = confidence
+        self.category = category
 
     def __repr__(self):
         s = ct_utils.pretty_print_object(self, False)
@@ -178,22 +187,50 @@ class DetectionLocation:
     def __repr__(self):
         s = ct_utils.pretty_print_object(self, False)
         return s
+    
+    def to_api_detection(self):
+        """
+        Converts to a 'detection' dictionary, making the semi-arbitrary assumption that
+        the first instance is representative of confidence.
+        """
+        detection = {'conf':self.instances[0].confidence,'bbox':self.bbox,'category':self.instances[0].category}
+        return detection
 
 
 ##%% Helper functions
 
+def enumerate_images(dirName,outputFileName=None):
+    """
+    Non-recursively enumerates all image files in *dirName* to the text file 
+    *outputFileName*, as relative paths.  This is used to produce a file list
+    after removing true positives from the image directory.
+    
+    Not used directly in this module, but provides a consistent way to enumerate
+    files in the format expected by this module.
+    """
+    imageList = path_utils.find_images(dirName)
+    imageList = [os.path.basename(fn) for fn in imageList]
+    
+    if outputFileName is not None:
+        with open(outputFileName,'w') as f:
+            for s in imageList:
+                f.write(s + '\n')
+            
+    return imageList
+    
 
-def render_bounding_box(bbox, inputFileName, imageOutputFilename, linewidth):
+def render_bounding_box(detection, inputFileName, outputFileName, lineWidth):
+    
     im = open_image(inputFileName)
-    # bbox is [x, y, width, height] where x, y is the top left corner, normalized units wrt width and height of image
-    x_min, y_min, x_max, y_max = ct_utils.convert_coords_to_xyxy(bbox)
-    draw_bounding_box_on_image(im, y_min, x_min, y_max, x_max, thickness=linewidth)
-    im.save(imageOutputFilename)
+    d = detection.to_api_detection()
+    render_detection_bounding_boxes([d],im,thickness=lineWidth,confidence_threshold=-10)
+    im.save(outputFileName)
 
 
 ##%% Look for matches (one directory) (function)
 
 def find_matches_in_directory(dirName, options, rowsByDirectory):
+    
     if options.pbar is not None:
         options.pbar.update()
 
@@ -226,9 +263,11 @@ def find_matches_in_directory(dirName, options, rowsByDirectory):
 
         # For each detection in this image
         for iDetection, detection in enumerate(detections):
+            
             assert 'category' in detection and 'conf' in detection and 'bbox' in detection
 
             confidence = detection['conf']
+            
             assert confidence >= 0.0 and confidence <= 1.0
             if confidence < options.confidenceMin:
                 continue
@@ -242,6 +281,8 @@ def find_matches_in_directory(dirName, options, rowsByDirectory):
                     continue
 
             bbox = detection['bbox']
+            confidence = detection['conf']
+            
             # Is this detection too big to be suspicious?
             w, h = bbox[2], bbox[3]
             area = h * w
@@ -253,8 +294,11 @@ def find_matches_in_directory(dirName, options, rowsByDirectory):
                 # print('Ignoring very large detection with area {}'.format(area))
                 continue
 
-            instance = IndexedDetection(iDetection,
-                                        row['file'], bbox)
+            category = detection['category']
+            
+            instance = IndexedDetection(iDetection=iDetection,
+                                        filename=row['file'], bbox=bbox, 
+                                        confidence=confidence, category=category)
 
             bFoundSimilarDetection = False
 
@@ -265,6 +309,7 @@ def find_matches_in_directory(dirName, options, rowsByDirectory):
                 iou = ct_utils.get_iou(bbox, candidate.bbox)
 
                 if iou >= options.iouThreshold:
+                    
                     bFoundSimilarDetection = True
 
                     # If so, add this example to the list for this detection
@@ -287,13 +332,13 @@ def find_matches_in_directory(dirName, options, rowsByDirectory):
 
     return candidateDetections
 
-
 # ...def find_matches_in_directory(dirName)
 
-
+    
 ##%% Render problematic locations to html (function)
 
 def render_images_for_directory(iDir, directoryHtmlFiles, suspiciousDetections, options):
+    
     nDirs = len(directoryHtmlFiles)
 
     if options.pbar is not None:
@@ -325,6 +370,7 @@ def render_images_for_directory(iDir, directoryHtmlFiles, suspiciousDetections, 
     nDetections = len(suspiciousDetectionsThisDir)
     bPrintedMissingImageWarning = False
 
+    # iDetection = 0; detection = suspiciousDetectionsThisDir[0]
     for iDetection, detection in enumerate(suspiciousDetectionsThisDir):
 
         if options.debugMaxRenderDetection > 0 and iDetection > options.debugMaxRenderDetection:
@@ -355,7 +401,7 @@ def render_images_for_directory(iDir, directoryHtmlFiles, suspiciousDetections, 
                                                imageRelativeFilename)
             thisImageInfo = {}
             thisImageInfo['filename'] = imageRelativeFilename
-            confidence = instance.bbox[4]
+            confidence = instance.confidence
             confidenceStr = '{:.2f}'.format(confidence)
             t = confidenceStr + ' (' + instance.filename + ')'
             thisImageInfo['title'] = t
@@ -368,7 +414,7 @@ def render_images_for_directory(iDir, directoryHtmlFiles, suspiciousDetections, 
                         print('Warning: could not find file {}'.format(inputFileName))
                         bPrintedMissingImageWarning = True
             else:
-                render_bounding_box(instance.bbox, inputFileName, imageOutputFilename, 15)
+                render_bounding_box(detection, inputFileName, imageOutputFilename, 15)
 
         # ...for each instance
 
@@ -403,13 +449,13 @@ def render_images_for_directory(iDir, directoryHtmlFiles, suspiciousDetections, 
 
     return directoryHtmlFile
 
-
 # ...def render_images_for_directory(iDir)
 
 
 ##%% Update the detection table based on suspicious results, write .csv output
 
 def update_detection_table(RepeatDetectionResults, options, outputFilename=None):
+    
     detectionResults = RepeatDetectionResults.detectionResults
 
     # An array of length nDirs, where each element is a list of DetectionLocation 
@@ -524,6 +570,7 @@ def update_detection_table(RepeatDetectionResults, options, outputFilename=None)
 ##%% Main function
 
 def find_repeat_detections(inputFilename, outputFilename, options=None):
+    
     ##%% Input handling
 
     if options is None:
@@ -694,6 +741,7 @@ def find_repeat_detections(inputFilename, outputFilename, options=None):
                 # Are we checking the directory to see whether detections were actually false positives,
                 # or reading from a list?
                 if fileList is None:
+                    
                     # Is the image still there?                
                     imageFullPath = os.path.join(filteringBaseDir, detection.sampleImageRelativeFileName)
 
@@ -703,16 +751,17 @@ def find_repeat_detections(inputFilename, outputFilename, options=None):
                         bValidDetection[iDetection] = False
 
                 else:
+                    
                     if detection.sampleImageRelativeFileName not in fileList:
                         nDetectionsRemoved += 1
                         bValidDetection[iDetection] = False
+
+            # ...for each detection
 
             nRemovedThisDir = len(bValidDetection) - sum(bValidDetection)
             if nRemovedThisDir > 0:
                 print('Removed {} of {} detections from directory {}'.format(nRemovedThisDir,
                                                                              len(detections), iDir))
-
-            # ...for each detection
 
             detectionsFiltered = list(compress(detections, bValidDetection))
             suspiciousDetections[iDir] = detectionsFiltered
@@ -800,15 +849,16 @@ def find_repeat_detections(inputFilename, outputFilename, options=None):
         for iDir, suspiciousDetectionsThisDir in enumerate(tqdm(suspiciousDetections)):
 
             # suspiciousDetectionsThisDir is a list of DetectionLocation objects
+            # iDetection = 0; detection = suspiciousDetectionsThisDir[0]
             for iDetection, detection in enumerate(suspiciousDetectionsThisDir):
-                bbox = detection.bbox
+                
                 instance = detection.instances[0]
                 relativePath = instance.filename
                 inputFullPath = os.path.join(options.imageBase, relativePath)
                 assert (os.path.isfile(inputFullPath)), 'Not a file: {}'.format(inputFullPath)
                 outputRelativePath = 'dir{:0>4d}_det{:0>4d}.jpg'.format(iDir, iDetection)
                 outputFullPath = os.path.join(filteringDir, outputRelativePath)
-                render_bounding_box(bbox, inputFullPath, outputFullPath, 15)
+                render_bounding_box(detection, inputFullPath, outputFullPath, 15)
                 detection.sampleImageRelativeFileName = outputRelativePath
 
         # Write out the detection index
@@ -887,10 +937,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('inputFile')
     parser.add_argument('outputFile')
-    parser.add_argument('--imageBase', action='store', type=str,
+    parser.add_argument('--imageBase', action='store', type=str, default='',
                         help='Image base dir, relevant if renderHtml is True or if omitFilteringFolder is not set')
-    parser.add_argument('--outputBase', action='store', type=str,
-                        help='Html output dir, only relevant if renderHtml is True')
+    parser.add_argument('--outputBase', action='store', type=str, default='',
+                        help='Html or filtering folder output dir')
     parser.add_argument('--filterFileToLoad', action='store', type=str, default='',  # checks for string length so default needs to be the empty string
                         help='Path to detectionIndex.json, which should be inside a folder of images that are manually verified to _not_ contain valid animals')
 

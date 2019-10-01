@@ -13,9 +13,9 @@ import json
 import os
 
 headers = ['image_path', 'max_confidence', 'detections']
-    
-#%% Functions
 
+
+#%% Functions
 
 def load_api_results(api_output_filename, normalize_paths=True, filename_replacements={}):
     """
@@ -33,6 +33,7 @@ def load_api_results(api_output_filename, normalize_paths=True, filename_replace
             a 'meta' column.
         other_fields: a dict containing fields in the dict
     """
+    
     print('Loading API results from {}'.format(api_output_filename))
 
     with open(api_output_filename) as f:
@@ -44,7 +45,8 @@ def load_api_results(api_output_filename, normalize_paths=True, filename_replace
     for s in ['info', 'detection_categories', 'images']:
         assert s in detection_results
 
-    other_fields = {}  # fields in the API output json other than 'images'
+    # Fields in the API output json other than 'images'
+    other_fields = {}  
     for k, v in detection_results.items():
         if k != 'images':
             other_fields[k] = v
@@ -84,12 +86,14 @@ def write_api_results(detection_results_table, other_fields, out_path):
     """
     Writes a Pandas DataFrame back to a json that is compatible with the API output format.
     """
+    
     print('Writing detection results to {}'.format(out_path))
 
     fields = other_fields
 
+    # TODO: read double_precision from a config elsewhere
     images = detection_results_table.to_json(orient='records',
-                                             double_precision=3)  # TODO read double_precision from a config elsewhere
+                                             double_precision=3)
     images = json.loads(images)
     fields['images'] = images
 
@@ -104,29 +108,30 @@ def load_api_results_csv(filename, normalize_paths=True, filename_replacements={
     DEPRECATED
     Loads .csv-formatted results from the batch processing API to a pandas table
     """
+    
     print('Loading API results from {}'.format(filename))
-    
+
     detection_results = pd.read_csv(filename,nrows=nrows)
-    
+
     print('De-serializing API results from {}'.format(filename))
-    
+
     # Sanity-check that this is really a detector output file
     for s in ['image_path','max_confidence','detections']:
         assert s in detection_results.columns
-    
+
     # Normalize paths to simplify comparisons later
     if normalize_paths:
         detection_results['image_path'] = detection_results['image_path'].apply(os.path.normpath)
-        
+
     # De-serialize detections
     detection_results['detections'] = detection_results['detections'].apply(json.loads)
-        
+
     # Optionally replace some path tokens to match local paths to the original blob structure
     # string_to_replace = list(options.detector_output_filename_replacements.keys())[0]
     for string_to_replace in filename_replacements:
-        
+
         replacement_string = filename_replacements[string_to_replace]
-        
+
         # TODO: hit some silly issues with vectorized str() and escaped characters, vectorize
         # this later.
         #
@@ -137,9 +142,9 @@ def load_api_results_csv(filename, normalize_paths=True, filename_replacements={
             fn = row['image_path']
             fn = fn.replace(string_to_replace,replacement_string)
             detection_results.at[iRow,'image_path'] = fn
-    
-    print('Finished loading and de-serializing API results for {} images from {}'.format(len(detection_results),filename))    
-    
+
+    print('Finished loading and de-serializing API results for {} images from {}'.format(len(detection_results),filename))
+
     return detection_results
 
 
@@ -150,9 +155,9 @@ def write_api_results_csv(detection_results, filename):
     format.  Currently just a wrapper around to_csv that just forces output writing
     to go through a common code path.
     """
-    
+
     print('Writing detection results to {}'.format(filename))
-    
+
     detection_results.to_csv(filename, index=False)
-    
+
     print('Finished writing detection results to {}'.format(filename))
